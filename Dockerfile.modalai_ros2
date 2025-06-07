@@ -1,0 +1,76 @@
+############################################################
+#  Unified ROS Humble + MAVSDK + acados image   (arm64)
+############################################################
+FROM ros:humble-ros-base   AS base
+
+########################
+# 0 - convenience tools
+########################
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nano build-essential cmake git python3-pip curl \
+    libblas-dev liblapack-dev libopenblas-dev pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+
+################################
+# 1 - Python scientific stack
+################################
+RUN python3 -m pip install --no-cache-dir -U pip && \
+    python3 -m pip install --no-cache-dir \
+      numpy scipy pandas matplotlib pyquaternion casadi
+
+########################
+# 2 - build & install MAVSDK
+########################
+WORKDIR /opt
+RUN git clone https://github.com/mavlink/MAVSDK.git && \
+    cd MAVSDK && \
+    git submodule update --init --recursive && \
+    cmake -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_MAVSDK_SERVER=ON \
+          -DBUILD_SHARED_LIBS=ON \
+          -Bbuild && \
+    cmake --build build --target install -- -j$(nproc) && \
+    ldconfig
+
+################################
+# 3 - build & install acados
+################################
+WORKDIR /opt
+RUN git clone https://github.com/acados/acados.git && \
+    cd acados && \
+    git submodule update --init --recursive && \
+    mkdir build && cd build && \
+    cmake .. -DACADOS_WITH_QPOASES=ON && \
+    make -j$(nproc) && make install && ldconfig && \
+    cd /opt/acados/interfaces/acados_template && \
+    python3 -m pip install .
+
+#########################################
+# 4 - build t_renderer (Rust) for acados
+#########################################
+WORKDIR /opt
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y && \
+    export PATH="/root/.cargo/bin:${PATH}" && \
+    git clone https://github.com/acados/tera_renderer.git && \
+    cd tera_renderer && \
+    /root/.cargo/bin/cargo build --release && \
+    cp target/release/t_renderer /usr/local/bin/t_renderer && \
+    chmod +x /usr/local/bin/t_renderer && \
+    rm -rf /opt/tera_renderer
+
+################################
+# 5 - copy your MAVSDK example
+################################
+WORKDIR /root
+COPY third_party/voxl2_takeoff_land.py /root/voxl2_takeoff_land.py
+
+###############################
+# 6 - environment & entrypoint
+###############################
+ENV ACADOS_SOURCE_DIR=/opt/acados
+ENV LD_LIBRARY_PATH=/usr/local/lib:/opt/acados/lib:$LD_LIBRARY_PATH
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+ENTRYPOINT ["/ros_entrypoint.sh"]
+CMD ["bash"]
